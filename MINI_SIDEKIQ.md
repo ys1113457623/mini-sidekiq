@@ -4,126 +4,217 @@ A miniature Sidekiq-style background-job runner built as a take-home exercise. R
 
 > **For the reviewer:** start with this file. It covers (a) how to run the app, (b) how to run the tests, (c) where the code lives and the order to read it, and (d) the design decisions and trade-offs. The full design spec is at [`docs/superpowers/specs/2026-05-05-mini-sidekiq-design.md`](docs/superpowers/specs/2026-05-05-mini-sidekiq-design.md).
 
-## Prerequisites
+## Run it (Docker — the path I recommend for review)
 
-| | |
-|---|---|
-| Ruby | 3.3.x (this project uses 3.3.10 via `.ruby-version`) |
-| Bundler | any recent version |
-| Redis | any modern Redis (5.0+). The executor falls back to polling `RPOP` instead of `BRPOP`; see [Design notes](#design-notes-and-trade-offs). |
-| Postgres | **not required** for mini-sidekiq itself. The host project is a Rails app that uses Postgres, but the mini-sidekiq tests deliberately bypass `rails/test_help` so they need only Redis. |
+This repository already has a `docker-compose.yml` at the root with Postgres, Redis, and the Rails containers wired up. **Two commands** is the fastest way to confirm everything works.
 
-## Install
+### 1. Bring the stack up
 
 ```sh
-bundle install
+docker compose up -d
 ```
 
-## Run the test suite
+This builds the dev image on first run (a few minutes) and starts `postgres`, `redis`, `web`, `vite`, and `worker` containers. Wait for the healthchecks; the `redis` container is what mini-sidekiq talks to.
 
-The mini-sidekiq tests do not require the Rails test database. Redis on `MINI_SIDEKIQ_TEST_REDIS_URL` (default `redis://localhost:6379/15`) is the only external dependency.
+### 2. Run the verification CLI
 
 ```sh
-bundle exec ruby -Itest test/mini_sidekiq/run.rb
+docker compose exec web bin/mini_sidekiq_cli verify
 ```
 
-Expected output:
+This runs **14 isolated feature checks** against a verification Redis DB and prints PASS/FAIL per feature. Sample output:
 
 ```
-Run options: --seed XXXXX
+Running verification against redis://redis:6379/15
 
-# Running:
+  [ 1] Redis connectivity                       ✓ PASS
+  [ 2] Client.push to default queue             ✓ PASS
+  [ 3] Priority queue pop ordering              ✓ PASS
+  [ 4] perform_in lands in schedule             ✓ PASS
+  [ 5] perform_at uses exact score              ✓ PASS
+  [ 6] Scheduler.drain promotes due             ✓ PASS
+  [ 7] Failing job → retry zset                 ✓ PASS
+  [ 8] 3rd failure → dead list                  ✓ PASS
+  [ 9] Missing class → dead list                ✓ PASS
+  [10] Corrupt payload → dead list              ✓ PASS
+  [11] error_handler hook is called             ✓ PASS
+  [12] Cron.register parses + stores            ✓ PASS
+  [13] Cron.tick fires when due                 ✓ PASS
+  [14] End-to-end worker run                    ✓ PASS
 
-.....................
+✓ ALL CHECKS PASSED (14/14)
+```
 
-Finished in 0.06s, ... runs/s, ... assertions/s.
+The CLI exits non-zero if any check fails, so it's CI-friendly. Each check is described in the [Verification checks](#verification-checks) table below.
 
+### Optional: also run the unit test suite
+
+The 21-test minitest suite covers the same components from a different angle (interface contracts via stubbed inputs, isolated unit semantics):
+
+```sh
+docker compose exec web bundle exec ruby -Itest test/mini_sidekiq/run.rb
+```
+
+Expected:
+
+```
 21 runs, 54 assertions, 0 failures, 0 errors, 0 skips
 ```
 
-## Run the worker against a live Redis
+The tests bypass `rails/test_help` so they don't need the Postgres test schema — Redis is the only dependency.
 
-In one terminal, start the worker:
-
-```sh
-MINI_SIDEKIQ_REDIS_URL=redis://localhost:6379/0 bin/mini_sidekiq
-```
-
-You should see:
-
-```
-I, [...] INFO -- : [mini_sidekiq] starting (concurrency=5)
-```
-
-In another terminal, enqueue jobs from a Rails console:
+### Optional: visually watch a live demo
 
 ```sh
-MINI_SIDEKIQ_REDIS_URL=redis://localhost:6379/0 bin/rails console
+docker compose exec web bin/mini_sidekiq_cli demo
+```
+
+This is a single-command demo (~12 s wall-clock) that exercises every feature in real time and prints what each thread does, then shows the final Redis state. Sample output:
+
+```
+=== Mini-Sidekiq end-to-end demo ===
+
+Enqueuing five jobs:
+  - HighPriorityJob "priority-A"           [queue:high, immediate]
+  - DemoJob         "immediate"            [queue:default, immediate]
+  - DemoJob         "+1s delayed"          [queue:default, perform_in(1)]
+  - DemoJob         "+2s delayed"          [queue:default, perform_in(2)]
+  - FlakyJob        "will fail then retry" [queue:default, immediate, raises]
+
+Starting worker (concurrency=1, so priority-order is visible) for 6 seconds...
+------------------------------------------------------------------
+[mini_sidekiq] starting (concurrency=1)
+  ▶ HIGH    ▶ priority-A           at 21:20:24.744       ← high pulled before default
+  ▶ default ▶ immediate            at 21:20:24.745
+  ▶ flaky   ▶ will fail then retry at 21:20:24.745 (raising)
+  ▶ default ▶ +1s delayed          at 21:20:25.790       ← scheduler promoted at +1s
+  ▶ default ▶ +2s delayed          at 21:20:26.832       ← scheduler promoted at +2s
+  ▶ flaky   ▶ will fail then retry at 21:20:29.844 (raising)  ← retry attempt #2 at +5s
+------------------------------------------------------------------
+Sending SIGINT for graceful shutdown...
+[mini_sidekiq] shutdown complete
+
+=== Final Redis state ===
+  queue:high       0
+  queue:default    0
+  queue:low        0
+  schedule         0
+  retry            1
+  dead             0
+
+FlakyJob is in the retry zset, scheduled for ... (attempts=2, last error: RuntimeError: intentional failure)
+```
+
+What the demo proves:
+
+| Feature | Evidence in the output |
+|---|---|
+| Three priority queues, high beats default | `HIGH ▶ priority-A` runs before `default ▶ immediate` even though both were enqueued ready |
+| `perform_in(seconds)` | `+1s delayed` runs at t≈1.0s, `+2s delayed` at t≈2.0s |
+| Retries with backoff | FlakyJob runs at t=0 and again at t=+5s (one `BACKOFF_SECONDS × attempts` later); 3rd attempt would land at +10s but the demo stops first, so the job is left in the retry zset for the next worker run |
+| Graceful shutdown | "shutdown complete" log line, queues fully drained except the in-flight retry |
+
+(Cron firing is not in the live demo because the cron poller's interval is 5 s by default — running long enough to observe a real fire would slow the demo down. Cron behavior is verified in [`test/mini_sidekiq/cron_test.rb`](test/mini_sidekiq/cron_test.rb).)
+
+### Verification checks
+
+Each `verify` check is small and isolated — it flushes the verification DB before running, exercises one specific behavior, and asserts the resulting Redis or in-memory state.
+
+| # | Check | What it proves |
+|---|---|---|
+| 1 | Redis connectivity | `MiniSidekiq.redis` can `SET`/`GET`/`DEL` |
+| 2 | `Client.push` to default queue | Enqueue produces a JSON payload with the right `class`/`args`/`queue` fields and lands in `queue:default` |
+| 3 | Priority queue pop ordering | Enqueue one to each of `high/default/low`; `Worker#pop_next` returns them in `[high, default, low]` order |
+| 4 | `perform_in` lands in schedule | `perform_in(60)` writes to `schedule` zset with score ≈ now + 60 |
+| 5 | `perform_at` exact score | `perform_at(time)` writes to `schedule` with score == `time.to_f` |
+| 6 | Scheduler drain promotes due | Past-due entries get moved into queue lists; future entries stay put |
+| 7 | Failing job → retry zset | `attempts: 0` failing payload lands in `retry` with `attempts: 1` and score ≈ now + `BACKOFF_SECONDS` |
+| 8 | 3rd failure → dead list | `attempts: 2` failing payload lands in `dead` with `attempts: 3` |
+| 9 | Missing class → dead list | Payload referencing a non-existent class bypasses retry, goes straight to `dead` |
+| 10 | Corrupt payload → dead list | Non-JSON input is captured into `dead` with class `<corrupt>` |
+| 11 | `error_handler` hook is called | Custom error handler proc receives the exception and payload context |
+| 12 | `Cron.register` parses + stores | A valid cron expression is parsed by fugit and added to the registry |
+| 13 | `Cron.tick` fires when due | Forcing `next_fire_at` into the past causes one enqueue and recomputes `next_fire_at` |
+| 14 | End-to-end worker run | Spawns the full worker (executor + scheduler + cron threads) for ~1.5 s and confirms an enqueued job actually runs (writes a sentinel file) |
+
+### CLI reference
+
+The CLI also exposes operational subcommands so the examiner can drive the system manually:
+
+```sh
+docker compose exec web bin/mini_sidekiq_cli help
+
+# inspect state
+docker compose exec web bin/mini_sidekiq_cli stats
+docker compose exec web bin/mini_sidekiq_cli peek queue:default
+docker compose exec web bin/mini_sidekiq_cli peek schedule
+
+# enqueue
+docker compose exec web bin/mini_sidekiq_cli enqueue                       # SampleJob → default
+docker compose exec web bin/mini_sidekiq_cli enqueue MyJob 42 hello        # MyJob → default
+docker compose exec -e MINI_SIDEKIQ_QUEUE=high web bin/mini_sidekiq_cli enqueue MyJob   # → high
+docker compose exec web bin/mini_sidekiq_cli enqueue-in 30 MyJob something # delayed 30 s
+
+# clean up
+docker compose exec web bin/mini_sidekiq_cli flush                         # confirms first
+
+# run the worker
+docker compose exec web bin/mini_sidekiq_cli worker --concurrency 3
+# (equivalent to: docker compose exec web bin/mini_sidekiq)
+```
+
+If you want to manually enqueue from a Rails console and watch the worker, run two terminals:
+
+```sh
+# terminal 1 — worker
+docker compose exec web bin/mini_sidekiq
+
+# terminal 2 — Rails console
+docker compose exec web bin/rails console
 ```
 
 ```ruby
 class HelloJob
   include MiniSidekiq::Job
   mini_sidekiq_options queue: :default
-
-  def perform(name)
-    puts "[HelloJob] hello #{name} at #{Time.now}"
-  end
+  def perform(name) = puts "[HelloJob] #{name} at #{Time.now}"
 end
 
-HelloJob.perform_async("immediate")           # runs right away
-HelloJob.perform_in(5, "in five seconds")     # runs in 5 s
-HelloJob.perform_at(Time.now + 30, "later")   # runs at a specific time
+HelloJob.perform_async("immediate")
+HelloJob.perform_in(5, "in five seconds")
+HelloJob.perform_at(Time.now + 30, "in thirty")
 
 MiniSidekiq::Cron.register("every-minute", "* * * * *", HelloJob, queue: :high)
-# Note: cron entries live in process memory, so they must be registered in the
-# *worker* process. In production you would put MiniSidekiq::Cron.register
-# calls in a Rails initializer that the worker boots.
 ```
 
-Watch the worker terminal — the immediate job runs first, the scheduler thread promotes the +5 s and +30 s jobs into the queue at the right times, and the cron poller fires once per minute.
+Stop the worker with `Ctrl-C` — shutdown is clean (no stack trace).
 
-Stop the worker with `Ctrl-C`. Shutdown should be clean (no stack trace, "shutdown complete" log line).
+> **Why a separate worker process when there's already a `worker` container running Sidekiq?**
+> The compose stack's `worker` runs *real* Sidekiq for the host Rails app. Mini-Sidekiq is a separate, drop-in implementation; running `bin/mini_sidekiq` from the `web` container starts an additional independent worker process that uses the same Redis but its own keyspace (`mini_sidekiq:*`).
 
-## End-to-end smoke run (single terminal)
+## Run it (without Docker)
 
-If you do not want to juggle two terminals, this script proves the full pipeline:
+If you're running the host project natively (Postgres + Redis on your machine), drop the `docker compose exec web` prefix:
 
 ```sh
-redis-cli -n 15 flushdb > /dev/null
-
-MINI_SIDEKIQ_REDIS_URL=redis://localhost:6379/15 bundle exec rails runner '
-  class SmokeJob
-    include MiniSidekiq::Job
-    def perform(name)
-      File.write("/tmp/mini_sidekiq_smoke.log", "ran for #{name} at #{Time.now.to_f}\n", mode: "a")
-    end
-  end
-  SmokeJob.perform_async("immediate")
-  SmokeJob.perform_in(1, "delayed-1s")
-'
-
-cat > /tmp/smoke_worker.rb <<EOF
-require "$(pwd)/config/environment"
-class SmokeJob
-  include MiniSidekiq::Job
-  def perform(name)
-    File.write("/tmp/mini_sidekiq_smoke.log", "ran for #{name} at #{Time.now.to_f}\n", mode: "a")
-  end
-end
-worker = MiniSidekiq::Worker.new(concurrency: 2)
-t = Thread.new { worker.run }
-sleep 4
-Process.kill("INT", Process.pid)
-t.join
-EOF
-
-rm -f /tmp/mini_sidekiq_smoke.log
-MINI_SIDEKIQ_REDIS_URL=redis://localhost:6379/15 timeout 8 bundle exec ruby /tmp/smoke_worker.rb
-cat /tmp/mini_sidekiq_smoke.log
+bundle install
+bin/mini_sidekiq_cli verify                                   # 14-check verification CLI
+bundle exec ruby -Itest test/mini_sidekiq/run.rb              # 21-test minitest suite
+bin/mini_sidekiq_cli demo                                     # end-to-end live demo
+bin/mini_sidekiq_cli worker                                   # long-running worker
 ```
 
-You should see two lines: `ran for immediate ...` at t≈0 and `ran for delayed-1s ...` ≈ 1 s later.
+The CLI honors `MINI_SIDEKIQ_REDIS_URL` (default `redis://localhost:6379/0`) for the operational subcommands; `verify` uses its own DB (default 15, override with `--db N`) so it never touches production traffic.
+
+The mini-sidekiq tests do not need Postgres at all — only a reachable Redis.
+
+## Prerequisites
+
+| | |
+|---|---|
+| Ruby | 3.3.x (project uses 3.3.10 via `.ruby-version`) — pre-installed in the dev container |
+| Redis | any modern Redis (5.0+). Provided by the `redis` service in `docker-compose.yml`. The executor falls back to polling `RPOP`; see [Design notes](#design-notes-and-trade-offs). |
+| Postgres | **not required for mini-sidekiq.** The wider Rails app uses Postgres, but mini-sidekiq tests bypass `rails/test_help` so they need only Redis. |
 
 ## Code map (read in this order)
 
@@ -135,7 +226,9 @@ You should see two lines: `ran for immediate ...` at t≈0 and `ran for delayed-
 | 4 | [`lib/mini_sidekiq/scheduler.rb`](lib/mini_sidekiq/scheduler.rb) | Polls `schedule` and `retry` sorted sets every 1 s, atomically moves due entries into their queue lists with `MULTI`/`EXEC`. |
 | 5 | [`lib/mini_sidekiq/cron.rb`](lib/mini_sidekiq/cron.rb) | Cron registry + 5 s poller. Uses `fugit` for cron parsing. Cron entries live in process memory; firing means enqueueing through `Client.push` and recomputing `next_fire_at`. |
 | 6 | [`lib/mini_sidekiq/worker.rb`](lib/mini_sidekiq/worker.rb) | Thread orchestration (executor pool + scheduler + cron), signal handling for graceful shutdown, the rescue chain that decides retry vs. dead. |
-| 7 | [`bin/mini_sidekiq`](bin/mini_sidekiq) | Executable entrypoint. Boots Rails (so `lib/` autoloads + initializers run for cron registrations) and calls `Worker.new.run`. |
+| 7 | [`lib/mini_sidekiq/cli.rb`](lib/mini_sidekiq/cli.rb) | The `verify` / `enqueue` / `stats` / `peek` / `flush` / `worker` / `demo` CLI. Self-contained: each `verify` check exercises one feature against an isolated Redis DB. |
+| 8 | [`bin/mini_sidekiq`](bin/mini_sidekiq) | Executable entrypoint for the worker process — boots Rails (so `lib/` autoloads + initializers run for cron registrations) and calls `Worker.new.run`. |
+| 9 | [`bin/mini_sidekiq_cli`](bin/mini_sidekiq_cli) | Executable entrypoint for the CLI (delegates to `MiniSidekiq::Cli`). |
 
 Tests mirror the source files at [`test/mini_sidekiq/`](test/mini_sidekiq/). They focus on contracts (what each component promises), not on Ruby/Redis internals.
 

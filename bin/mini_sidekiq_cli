@@ -1,0 +1,9 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+ENV["RAILS_ENV"] ||= "development"
+ENV["MINI_SIDEKIQ_REDIS_URL"] ||= ENV["REDIS_URL"] if ENV["REDIS_URL"]
+require_relative "../config/environment"
+require "uri"
+
+MiniSidekiq::Cli.new(ARGV).run
