@@ -15,13 +15,13 @@ The setup must prove every component works end-to-end via a tiny per-app sanity 
 | Layer | Choice |
 |---|---|
 | Ruby | 3.3.10 (managed via rbenv, pinned in `.ruby-version`) |
-| Rails | 8.0.x — full Rails (not API-only); each app gets a Rails layout + Vite-mounted React |
+| Rails | 8.1.x — full Rails (not API-only); each app gets a Rails layout + Vite-mounted React |
 | Database | Postgres 16 (Docker container) |
 | Redis | Redis 7 (Docker container) — used for Sidekiq queue, Rails cache store, Action Cable |
 | JS bundler | Vite via `vite_rails` (`vite-plugin-ruby`) |
-| React | 18.x |
-| Routing inside each React app | `react-router` v6 |
-| CSS | Tailwind CSS 3 via Vite's PostCSS plugin |
+| React | 19.x |
+| Routing inside each React app | `react-router-dom` v7 |
+| CSS | Tailwind CSS 4 via the `@tailwindcss/vite` plugin (no PostCSS config needed) |
 | Background jobs | Sidekiq (Active Job adapter) — overrides Rails 8's Solid Queue default |
 | Cache store | `:redis_cache_store` — overrides Rails 8's Solid Cache default |
 | Action Cable adapter | `redis` — overrides Rails 8's Solid Cable default |

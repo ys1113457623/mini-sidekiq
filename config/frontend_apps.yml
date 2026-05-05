@@ -1,0 +1,30 @@
+# Single source of truth for the multi-app monolith.
+#
+# Each entry is a frontend app (a Rails-mounted React tree). Toggle `enabled`
+# to gate both the HTML shell route AND the JSON API namespace for that app.
+#
+# Read by:
+#   - config/initializers/frontend_apps.rb  (exposes Rails.application.config.frontend_apps)
+#   - config/routes.rb                      (gates HTML + API mounts)
+#   - vite.config.ts (indirectly, in dev: only requested entrypoints compile)
+
+default: &default
+  apps:
+    mentee:
+      mount: /mentee
+      enabled: true
+    career_hubs:
+      mount: /career-hubs
+      enabled: true
+    assessments:
+      mount: /assessments
+      enabled: true
+
+development:
+  <<: *default
+
+test:
+  <<: *default
+
+production:
+  <<: *default

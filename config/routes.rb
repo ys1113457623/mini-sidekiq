@@ -1,14 +1,38 @@
 Rails.application.routes.draw do
-  # Define your application routes per the DSL in https://guides.rubyonrails.org/routing.html
+  # Loads a per-app HTML route file from config/routes/components/<name>.rb
+  def draw_component(name)
+    instance_eval(File.read(Rails.root.join("config/routes/components/#{name}.rb")))
+  end
 
-  # Reveal health status on /up that returns 200 if the app boots with no exceptions, otherwise 500.
-  # Can be used by load balancers and uptime monitors to verify that the app is live.
+  # Loads a per-app API route file from config/routes/api/v1/<name>.rb
+  def draw_api(name)
+    instance_eval(File.read(Rails.root.join("config/routes/api/v1/#{name}.rb")))
+  end
+
+  # Health check (always on)
   get "up" => "rails/health#show", as: :rails_health_check
 
-  # Render dynamic PWA files from app/views/pwa/* (remember to link manifest in application.html.erb)
-  # get "manifest" => "rails/pwa#manifest", as: :pwa_manifest
-  # get "service-worker" => "rails/pwa#service_worker", as: :pwa_service_worker
+  # HTML shells, gated by config/frontend_apps.yml
+  Rails.application.config.frontend_apps.each do |app, cfg|
+    next unless cfg[:enabled]
+    draw_component(app)
+  end
 
-  # Defines the root path route ("/")
-  # root "posts#index"
+  # JSON API namespace, gated app-by-app + always-on shared
+  namespace :api do
+    namespace :v1 do
+      Rails.application.config.frontend_apps.each do |app, cfg|
+        next unless cfg[:enabled]
+        draw_api(app)
+      end
+      draw_api("shared")
+    end
+  end
+
+  mount ActionCable.server => "/cable"
+
+  # Convenience: visit "/" → first enabled app's mount path.
+  if (first_enabled = Rails.application.config.enabled_frontend_apps.values.first)
+    root to: redirect(first_enabled[:mount])
+  end
 end
