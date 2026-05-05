@@ -1,6 +1,9 @@
 # dummy-rails
 
-Multi-app Rails 8 monolith hosting independent React apps under one Rails process. See the design spec at [`docs/superpowers/specs/2026-05-05-rails-react-multi-app-setup-design.md`](docs/superpowers/specs/2026-05-05-rails-react-multi-app-setup-design.md).
+Multi-app Rails 8 monolith hosting independent React apps under one Rails process.
+
+- 📖 **New here?** Read [docs/project-walkthrough.md](docs/project-walkthrough.md) for an architecture-first tour of the codebase.
+- 📐 **Want the design rationale?** See [the spec](docs/superpowers/specs/2026-05-05-rails-react-multi-app-setup-design.md).
 
 ## Stack
 
