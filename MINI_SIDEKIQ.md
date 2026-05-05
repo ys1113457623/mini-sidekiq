@@ -1,6 +1,6 @@
 # Mini-Sidekiq
 
-A miniature Sidekiq-style background-job runner built as a take-home exercise. Redis-backed, Ruby. Three priority queues, scheduled jobs, cron, retries, dead set, graceful shutdown.
+A miniature Sidekiq-style background-job runner built as a take-home exercise. Redis-backed, Ruby. Three priority queues, scheduled jobs, synchronous in-process execution, cron, retries, dead set, graceful shutdown.
 
 > **For the reviewer:** start with this file. It covers (a) how to run the app, (b) how to run the tests, (c) where the code lives and the order to read it, and (d) the design decisions and trade-offs. The full design spec is at [`docs/superpowers/specs/2026-05-05-mini-sidekiq-design.md`](docs/superpowers/specs/2026-05-05-mini-sidekiq-design.md).
 
@@ -22,7 +22,7 @@ This builds the dev image on first run (a few minutes) and starts `postgres`, `r
 docker compose exec web bin/mini_sidekiq_cli verify
 ```
 
-This runs **14 isolated feature checks** against a verification Redis DB and prints PASS/FAIL per feature. Sample output:
+This runs **15 isolated feature checks** against a verification Redis DB and prints PASS/FAIL per feature. Sample output:
 
 ```
 Running verification against redis://redis:6379/15
@@ -32,17 +32,18 @@ Running verification against redis://redis:6379/15
   [ 3] Priority queue pop ordering              ✓ PASS
   [ 4] perform_in lands in schedule             ✓ PASS
   [ 5] perform_at uses exact score              ✓ PASS
-  [ 6] Scheduler.drain promotes due             ✓ PASS
-  [ 7] Failing job → retry zset                 ✓ PASS
-  [ 8] 3rd failure → dead list                  ✓ PASS
-  [ 9] Missing class → dead list                ✓ PASS
-  [10] Corrupt payload → dead list              ✓ PASS
-  [11] error_handler hook is called             ✓ PASS
-  [12] Cron.register parses + stores            ✓ PASS
-  [13] Cron.tick fires when due                 ✓ PASS
-  [14] End-to-end worker run                    ✓ PASS
+  [ 6] perform_inline runs in-process           ✓ PASS
+  [ 7] Scheduler.drain promotes due             ✓ PASS
+  [ 8] Failing job → retry zset                 ✓ PASS
+  [ 9] 3rd failure → dead list                  ✓ PASS
+  [10] Missing class → dead list                ✓ PASS
+  [11] Corrupt payload → dead list              ✓ PASS
+  [12] error_handler hook is called             ✓ PASS
+  [13] Cron.register parses + stores            ✓ PASS
+  [14] Cron.tick fires when due                 ✓ PASS
+  [15] End-to-end worker run                    ✓ PASS
 
-✓ ALL CHECKS PASSED (14/14)
+✓ ALL CHECKS PASSED (15/15)
 ```
 
 The CLI exits non-zero if any check fails, so it's CI-friendly. Each check is described in the [Verification checks](#verification-checks) table below.
@@ -127,15 +128,16 @@ Each `verify` check is small and isolated — it flushes the verification DB bef
 | 3 | Priority queue pop ordering | Enqueue one to each of `high/default/low`; `Worker#pop_next` returns them in `[high, default, low]` order |
 | 4 | `perform_in` lands in schedule | `perform_in(60)` writes to `schedule` zset with score ≈ now + 60 |
 | 5 | `perform_at` exact score | `perform_at(time)` writes to `schedule` with score == `time.to_f` |
-| 6 | Scheduler drain promotes due | Past-due entries get moved into queue lists; future entries stay put |
-| 7 | Failing job → retry zset | `attempts: 0` failing payload lands in `retry` with `attempts: 1` and score ≈ now + `BACKOFF_SECONDS` |
-| 8 | 3rd failure → dead list | `attempts: 2` failing payload lands in `dead` with `attempts: 3` |
-| 9 | Missing class → dead list | Payload referencing a non-existent class bypasses retry, goes straight to `dead` |
-| 10 | Corrupt payload → dead list | Non-JSON input is captured into `dead` with class `<corrupt>` |
-| 11 | `error_handler` hook is called | Custom error handler proc receives the exception and payload context |
-| 12 | `Cron.register` parses + stores | A valid cron expression is parsed by fugit and added to the registry |
-| 13 | `Cron.tick` fires when due | Forcing `next_fire_at` into the past causes one enqueue and recomputes `next_fire_at` |
-| 14 | End-to-end worker run | Spawns the full worker (executor + scheduler + cron threads) for ~1.5 s and confirms an enqueued job actually runs (writes a sentinel file) |
+| 6 | `perform_inline` runs in-process | Synchronous execution path: `perform_inline` runs the job in the caller's thread, returns the result, and writes nothing to Redis |
+| 7 | Scheduler drain promotes due | Past-due entries get moved into queue lists; future entries stay put |
+| 8 | Failing job → retry zset | `attempts: 0` failing payload lands in `retry` with `attempts: 1` and score ≈ now + `BACKOFF_SECONDS` |
+| 9 | 3rd failure → dead list | `attempts: 2` failing payload lands in `dead` with `attempts: 3` |
+| 10 | Missing class → dead list | Payload referencing a non-existent class bypasses retry, goes straight to `dead` |
+| 11 | Corrupt payload → dead list | Non-JSON input is captured into `dead` with class `<corrupt>` |
+| 12 | `error_handler` hook is called | Custom error handler proc receives the exception and payload context |
+| 13 | `Cron.register` parses + stores | A valid cron expression is parsed by fugit and added to the registry |
+| 14 | `Cron.tick` fires when due | Forcing `next_fire_at` into the past causes one enqueue and recomputes `next_fire_at` |
+| 15 | End-to-end worker run | Spawns the full worker (executor + scheduler + cron threads) for ~1.5 s and confirms an enqueued job actually runs (writes a sentinel file) |
 
 ### CLI reference
 

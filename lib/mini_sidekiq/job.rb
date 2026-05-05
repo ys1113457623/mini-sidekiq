@@ -34,6 +34,10 @@ module MiniSidekiq
           run_at: time.to_f
         )
       end
+
+      def perform_inline(*args)
+        new.perform(*args)
+      end
     end
   end
 end

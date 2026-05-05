@@ -259,6 +259,7 @@ module MiniSidekiq
         check("Priority queue pop ordering")     { check_priority_pop }
         check("perform_in lands in schedule")    { check_perform_in_schedule }
         check("perform_at uses exact score")     { check_perform_at_score }
+        check("perform_inline runs in-process")  { check_perform_inline }
         check("Scheduler.drain promotes due")    { check_scheduler_drain }
         check("Failing job → retry zset")        { check_retry_first_failure }
         check("3rd failure → dead list")         { check_retry_exhausted }
@@ -349,6 +350,16 @@ module MiniSidekiq
         klass.perform_at(target, "x")
         score = MiniSidekiq.redis.zrange(MiniSidekiq.schedule_key, 0, -1, with_scores: true).first.last
         assert((score - target.to_f).abs < 0.01, "expected #{target.to_f}, got #{score}")
+      end
+
+      def check_perform_inline
+        klass = define_inline_job
+        result = klass.perform_inline("xyz")
+
+        assert(klass.last_call == "xyz", "perform did not receive arg, last_call=#{klass.last_call.inspect}")
+        assert(result == "ok-xyz", "wrong return value: #{result.inspect}")
+        assert(MiniSidekiq.redis.llen(MiniSidekiq.queue_key("default")) == 0, "queue should be empty (perform_inline must not touch Redis)")
+        assert(MiniSidekiq.redis.zcard(MiniSidekiq.schedule_key) == 0, "schedule should be empty (perform_inline must not touch Redis)")
       end
 
       def check_scheduler_drain
@@ -458,6 +469,23 @@ module MiniSidekiq
         end
         Object.const_set(name, klass) unless Object.const_defined?(name)
         Object.const_get(name)
+      end
+
+      def define_inline_job
+        unless Object.const_defined?(:VerifyInlineJob)
+          klass = Class.new do
+            include MiniSidekiq::Job
+            class << self
+              attr_accessor :last_call
+            end
+            def perform(value)
+              self.class.last_call = value
+              "ok-#{value}"
+            end
+          end
+          Object.const_set(:VerifyInlineJob, klass)
+        end
+        Object.const_get(:VerifyInlineJob).tap { |k| k.last_call = nil }
       end
 
       def define_failing_job

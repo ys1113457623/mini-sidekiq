@@ -13,6 +13,22 @@ class JobTestDefault
   def perform(*); end
 end
 
+class JobTestInlineRecorder
+  class << self
+    attr_accessor :calls
+  end
+  self.calls = []
+end
+
+class JobTestInline
+  include MiniSidekiq::Job
+
+  def perform(value)
+    JobTestInlineRecorder.calls << value
+    "ran with #{value}"
+  end
+end
+
 module MiniSidekiq
   class JobTest < ::MiniSidekiqTestCase
     test "perform_async pushes to configured queue" do
@@ -47,6 +63,24 @@ module MiniSidekiq
       members = MiniSidekiq.redis.zrange(MiniSidekiq.schedule_key, 0, -1, with_scores: true)
       assert_equal 1, members.size
       assert_in_delta target.to_f, members.first.last, 0.001
+    end
+
+    test "perform_inline runs synchronously without touching Redis" do
+      JobTestInlineRecorder.calls = []
+      result = JobTestInline.perform_inline("hello")
+
+      assert_equal ["hello"], JobTestInlineRecorder.calls
+      assert_equal "ran with hello", result
+      assert_equal 0, MiniSidekiq.redis.llen(MiniSidekiq.queue_key("default"))
+      assert_equal 0, MiniSidekiq.redis.zcard(MiniSidekiq.schedule_key)
+    end
+
+    test "perform_inline re-raises exceptions" do
+      failing = Class.new do
+        include MiniSidekiq::Job
+        def perform(*); raise "boom"; end
+      end
+      assert_raises(RuntimeError) { failing.perform_inline }
     end
   end
 end
