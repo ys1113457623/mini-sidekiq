@@ -1,0 +1,56 @@
+# Development image for the Rails app, the Vite dev server, and the Sidekiq
+# worker. All three docker-compose services share this image; only the command
+# differs.
+
+FROM ruby:3.3.10-slim
+
+ENV LANG=C.UTF-8 \
+    BUNDLE_PATH=/usr/local/bundle \
+    BUNDLE_JOBS=4 \
+    BUNDLE_RETRY=3 \
+    NODE_ENV=development \
+    RAILS_ENV=development
+
+# System deps:
+#   - build-essential, git, libpq-dev, pkg-config: building native gems (pg, etc.)
+#   - postgresql-client: rails db:* tasks need pg_dump / psql
+#   - curl, ca-certificates, gnupg: bootstrap for NodeSource repo
+#   - tzdata: for non-UTC time zones if needed
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y \
+      build-essential \
+      ca-certificates \
+      curl \
+      git \
+      gnupg \
+      libpq-dev \
+      libyaml-dev \
+      pkg-config \
+      postgresql-client \
+      tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js 20 (LTS) + npm
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get update -qq && \
+    apt-get install --no-install-recommends -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Pre-install Ruby gems. Layer is cached unless Gemfile/Gemfile.lock changes.
+COPY Gemfile Gemfile.lock ./
+RUN gem install bundler && bundle install
+
+# Pre-install JS deps. Layer is cached unless package.json/lock changes.
+COPY package.json package-lock.json* ./
+RUN npm install
+
+# Source is mounted as a volume in docker-compose so edits are live.
+# Each service's command is set in docker-compose.yml.
+
+EXPOSE 3000 3036
+
+COPY bin/docker-entrypoint /usr/local/bin/docker-entrypoint
+RUN chmod +x /usr/local/bin/docker-entrypoint
+ENTRYPOINT ["docker-entrypoint"]

@@ -19,37 +19,60 @@ The monolith currently hosts three apps mounted at:
 
 Each app has its own React tree under `app/frontend/<app>/`, its own Rails layout under `app/views/layouts/<app>/`, and its own JSON API namespace under `/api/v1/<app>/`. All four pieces are gated by [`config/frontend_apps.yml`](config/frontend_apps.yml) — flip an app's `enabled` flag and that app's HTML route, API namespace, and Vite entrypoint all stop existing for the next boot.
 
-## First-time setup
+## Running everything in Docker (recommended)
 
 ```sh
-# 1. Pin Ruby and install gems
-rbenv local 3.3.10
-bundle install
-
-# 2. Install JS deps
-npm install
-
-# 3. Bring up Postgres + Redis
-docker compose up -d
-
-# 4. Create a .env (defaults match docker-compose.yml — usually no edits needed)
-cp .env.example .env
-
-# 5. Create + migrate the dev database
-bundle exec rails db:create db:migrate
+docker compose up
 ```
 
-## Running the dev server
+That single command builds the image (first time only — takes a few minutes) and starts five containers:
+
+- `postgres` — Postgres 16
+- `redis`    — Redis 7
+- `web`      — Rails on http://localhost:3000
+- `vite`     — Vite dev server on http://localhost:3036 (proxied through Rails)
+- `worker`   — Sidekiq
+
+The `web` container automatically runs `rails db:prepare` on startup, so the database is created/migrated for you. Edits to source files are live-reloaded — `.` is mounted into each container.
+
+`Ctrl+C` stops everything. `docker compose up -d` runs detached.
+
+### Useful commands inside the containers
 
 ```sh
-bin/dev
+docker compose exec web bundle exec rails console        # Rails console
+docker compose exec web bundle exec rails routes          # show routes
+docker compose exec web bundle exec rails db:migrate      # run a new migration
+docker compose exec web bash                              # shell into the web container
+docker compose exec postgres psql -U dummy dummy_rails_development
+docker compose logs -f web                                # tail Rails logs
 ```
 
-This runs three processes via Foreman + `Procfile.dev`:
+### When Gemfile or package.json changes
 
-- `web`    — Rails on http://localhost:3000
-- `vite`   — Vite dev server on http://localhost:3036 (proxied through Rails)
-- `worker` — Sidekiq
+The image bakes in deps, but the bundle cache and node_modules are persistent volumes so a host edit alone doesn't trigger reinstall. Run:
+
+```sh
+docker compose exec web bundle install   # after Gemfile change
+docker compose exec web npm install      # after package.json change
+```
+
+If the image itself becomes stale (rare), rebuild:
+
+```sh
+docker compose build
+```
+
+## Native dev (alternative — faster reload on macOS)
+
+If you'd rather run the app processes natively on your machine and only Postgres/Redis in Docker, the original script still works:
+
+```sh
+docker compose up -d postgres redis      # services only
+bin/dev                                    # runs rails + vite + sidekiq via foreman
+```
+
+This requires `rbenv local 3.3.10`, `bundle install`, and `npm install` on the host first.
 
 Visit any of:
 

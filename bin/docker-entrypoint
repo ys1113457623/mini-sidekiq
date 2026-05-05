@@ -1,8 +1,28 @@
-#!/bin/bash -e
+#!/usr/bin/env bash
+set -e
 
-# If running the rails server then create or migrate existing database
-if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
-  ./bin/rails db:prepare
+# Re-install gems if the bundle volume is stale (e.g., Gemfile changed since
+# image was built). Cheap no-op if everything is already installed.
+if ! bundle check >/dev/null 2>&1; then
+  echo "[entrypoint] Gems missing/stale → bundle install"
+  bundle install
 fi
 
-exec "${@}"
+# Same for JS deps. We check for the vite binary specifically because
+# `node_modules/` itself can exist as an empty volume mount.
+if [ ! -x "node_modules/.bin/vite" ]; then
+  echo "[entrypoint] node_modules missing/stale → npm install"
+  npm install
+fi
+
+# Only the web container should run db:prepare. The vite/worker containers
+# don't need it and the parallel attempts cause races.
+if [ "$ROLE" = "web" ]; then
+  echo "[entrypoint] rails db:prepare"
+  bundle exec rails db:prepare
+fi
+
+# Remove a stale server.pid that can linger if the container died ungracefully.
+rm -f tmp/pids/server.pid
+
+exec "$@"
