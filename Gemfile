@@ -14,6 +14,9 @@ gem "redis", ">= 4.0.1"
 # Background jobs
 gem "sidekiq"
 
+# Cron expression parsing (used by lib/mini_sidekiq for recurring jobs)
+gem "fugit"
+
 # Vite for asset bundling (React + Tailwind via PostCSS)
 gem "vite_rails"
 

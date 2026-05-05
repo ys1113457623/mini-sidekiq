@@ -1,0 +1,8 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+ENV["RAILS_ENV"] ||= "development"
+require_relative "../config/environment"
+
+# Cron registrations should be loaded by config/initializers/* during Rails boot.
+MiniSidekiq::Worker.new.run

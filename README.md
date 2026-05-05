@@ -111,3 +111,8 @@ Edit `config/frontend_apps.yml` and set `enabled: false` on the apps you don't w
 ```sh
 bundle exec rails test
 ```
+
+## Mini-Sidekiq
+
+A miniature Sidekiq-style background-job runner lives under `lib/mini_sidekiq/` with the worker binary at `bin/mini_sidekiq`. See [MINI_SIDEKIQ.md](MINI_SIDEKIQ.md) for setup, run, and review instructions, and [docs/superpowers/specs/2026-05-05-mini-sidekiq-design.md](docs/superpowers/specs/2026-05-05-mini-sidekiq-design.md) for the design spec.
+# mini-sidekiq
