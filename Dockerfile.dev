@@ -9,7 +9,8 @@ ENV LANG=C.UTF-8 \
     BUNDLE_JOBS=4 \
     BUNDLE_RETRY=3 \
     NODE_ENV=development \
-    RAILS_ENV=development
+    RAILS_ENV=development \
+    PATH=/usr/local/bundle/bin:/app/bin:/app/node_modules/.bin:$PATH
 
 # System deps:
 #   - build-essential, git, libpq-dev, pkg-config: building native gems (pg, etc.)
